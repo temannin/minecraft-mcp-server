@@ -17,7 +17,8 @@ import { registerFlightTools } from './tools/flight-tools.js';
 import { registerGameStateTools } from './tools/gamestate-tools.js';
 import { registerCraftingTools } from './tools/crafting-tools.js';
 import { registerFurnaceTools } from './tools/furnace-tools.js';
-import { registerBedTools } from "./tools/bed-tools.js";
+import { registerBedTools } from './tools/bed-tools.js';
+import { registerInteractionTools } from './tools/interaction-tools.js';
 
 setupStdioFiltering();
 
@@ -61,6 +62,7 @@ async function main() {
   registerCraftingTools(factory, getBot);
   registerFurnaceTools(factory, getBot);
   registerBedTools(factory, getBot);
+  registerInteractionTools(factory, getBot);
 
   process.stdin.on('end', () => {
     connection.cleanup();
