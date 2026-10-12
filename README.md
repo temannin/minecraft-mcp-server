@@ -100,14 +100,26 @@ Once connected to a Minecraft server, Claude can use these commands:
 - `list-inventory` - List all items in the bot's inventory
 - `find-item` - Find a specific item in inventory
 - `equip-item` - Equip a specific item
-- `open-container` - Open a block container or chest at specified coordinates
+- `open-container` - Open a container at specified coordinates and list its contents
 - `close-window` - Close the window or inventory that the bot currently has open
+- `toss-item` - Drop items from the inventory onto the ground
 
 ### Block Interaction
 - `place-block` - Place a block at specified coordinates
 - `dig-block` - Dig a block at specified coordinates
 - `get-block-info` - Get information about a block
 - `find-blocks` - Find one or more nearby blocks of a specific type
+
+### Containers
+- `deposit-to-chest` - Deposit items into a chest or other container at specified coordinates
+- `withdraw-from-chest` - Take items from a chest or other container at specified coordinates
+
+Chests, trapped chests, ender chests, barrels, shulker boxes, hoppers, dispensers
+and droppers are all supported. `deposit-to-chest` and `withdraw-from-chest` open
+and close the container themselves, so they are the simplest way to move a single
+stack. Use `open-container` with `close-window` only when you need the container
+to stay open across several calls; the bot can hold one container open at a time,
+so the deposit and withdraw tools will close an open one first.
 
 ### Furnace
 - `smelt-item` - Smelt items using a furnace-like block
@@ -118,6 +130,19 @@ Once connected to a Minecraft server, Claude can use these commands:
 ### Communication
 - `send-chat` - Send a chat message in-game
 - `read-chat` - Get recent chat messages from players
+
+### Item Use
+- `use-item` - Use (right-click) the currently held item
+- `deactivate-item` - Stop using (release right-click) the currently held item
+- `eat` - Eat or drink the currently held food or potion
+
+### Fishing
+- `fish` - Cast, wait for a bite and reel in, with a configurable timeout
+- `wait-for-fish` - Wait for a bite on a rod already cast with `use-item`
+
+### Sleep
+- `sleep-bed` - Find a nearby bed and sleep in it
+- `wake-up` - Wake the bot up from bed
 
 ### Game State
 - `detect-gamemode` - Detect the gamemode on game

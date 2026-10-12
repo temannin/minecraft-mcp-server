@@ -164,3 +164,138 @@ test('equip-item returns message when item not found', async (t) => {
 
   t.true(result.content[0].text.includes('Couldn\'t find'));
 });
+
+const createContainerHarness = (botFields: Partial<mineflayer.Bot>) => {
+  const mockServer = { tool: sinon.stub() } as unknown as McpServer;
+  const mockConnection = {
+    checkConnectionAndReconnect: sinon.stub().resolves({ connected: true })
+  } as unknown as BotConnection;
+  const factory = new ToolFactory(mockServer, mockConnection);
+  const getBot = () => botFields as mineflayer.Bot;
+
+  registerInventoryTools(factory, getBot);
+
+  const executorFor = (name: string) => {
+    const call = (mockServer.tool as sinon.SinonStub)
+      .getCalls()
+      .find(c => c.args[0] === name);
+    return call!.args[3] as (args: unknown) => Promise<{ content: { text: string }[] }>;
+  };
+
+  return { executorFor };
+};
+
+const createChestBlock = (name = 'chest') => ({
+  name,
+  position: { x: 5, y: 60, z: 5 }
+});
+
+test('open-container reports when there is no block at the position', async (t) => {
+  const { executorFor } = createContainerHarness({
+    blockAt: sinon.stub().returns(null)
+  } as unknown as Partial<mineflayer.Bot>);
+
+  const result = await executorFor('open-container')({ x: 5, y: 60, z: 5 });
+
+  t.true(result.content[0].text.includes('No block information found at position (5, 60, 5)'));
+});
+
+test('open-container lists the contents of the container it opens', async (t) => {
+  const container = {
+    type: 'minecraft:generic_9x3',
+    containerItems: () => [
+      { name: 'oak_log', count: 12 },
+      { name: 'coal', count: 3 }
+    ]
+  };
+  const { executorFor } = createContainerHarness({
+    blockAt: sinon.stub().returns(createChestBlock()),
+    currentWindow: null,
+    closeWindow: sinon.stub().resolves(),
+    openContainer: sinon.stub().resolves(container)
+  } as unknown as Partial<mineflayer.Bot>);
+
+  const result = await executorFor('open-container')({ x: 5, y: 60, z: 5 });
+  const text = result.content[0].text;
+
+  t.true(text.includes('Opened container (type: minecraft:generic_9x3) at position (5, 60, 5)'));
+  t.true(text.includes('Contents: oak_log x 12, coal x 3'));
+});
+
+test('open-container reports an empty container', async (t) => {
+  const { executorFor } = createContainerHarness({
+    blockAt: sinon.stub().returns(createChestBlock()),
+    currentWindow: null,
+    closeWindow: sinon.stub().resolves(),
+    openContainer: sinon.stub().resolves({ type: 'chest', containerItems: () => [] })
+  } as unknown as Partial<mineflayer.Bot>);
+
+  const result = await executorFor('open-container')({ x: 5, y: 60, z: 5 });
+
+  t.true(result.content[0].text.includes('Contents: empty'));
+});
+
+test('open-container closes a window that was already open', async (t) => {
+  const closeWindow = sinon.stub().resolves();
+  const { executorFor } = createContainerHarness({
+    blockAt: sinon.stub().returns(createChestBlock()),
+    currentWindow: { type: 'minecraft:generic_9x6' },
+    closeWindow,
+    openContainer: sinon.stub().resolves({ type: 'chest', containerItems: () => [] })
+  } as unknown as Partial<mineflayer.Bot>);
+
+  const result = await executorFor('open-container')({ x: 5, y: 60, z: 5 });
+
+  t.true(closeWindow.calledOnce);
+  t.true(result.content[0].text.includes('Closed the previously open minecraft:generic_9x6 window first'));
+});
+
+test('open-container notes when the block is not a known storage block', async (t) => {
+  const { executorFor } = createContainerHarness({
+    blockAt: sinon.stub().returns(createChestBlock('enchanting_table')),
+    currentWindow: null,
+    closeWindow: sinon.stub().resolves(),
+    openContainer: sinon.stub().resolves({ type: 'enchant', containerItems: () => [] })
+  } as unknown as Partial<mineflayer.Bot>);
+
+  const result = await executorFor('open-container')({ x: 5, y: 60, z: 5 });
+
+  t.true(result.content[0].text.includes('Note: enchanting_table is not a known storage block'));
+});
+
+test('open-container omits the storage note for a barrel', async (t) => {
+  const { executorFor } = createContainerHarness({
+    blockAt: sinon.stub().returns(createChestBlock('barrel')),
+    currentWindow: null,
+    closeWindow: sinon.stub().resolves(),
+    openContainer: sinon.stub().resolves({ type: 'barrel', containerItems: () => [] })
+  } as unknown as Partial<mineflayer.Bot>);
+
+  const result = await executorFor('open-container')({ x: 5, y: 60, z: 5 });
+
+  t.false(result.content[0].text.includes('not a known storage block'));
+});
+
+test('close-window reports when nothing is open', async (t) => {
+  const { executorFor } = createContainerHarness({
+    currentWindow: null,
+    closeWindow: sinon.stub().resolves()
+  } as unknown as Partial<mineflayer.Bot>);
+
+  const result = await executorFor('close-window')({});
+
+  t.true(result.content[0].text.includes('The bot does not have a window currently open'));
+});
+
+test('close-window closes the open window', async (t) => {
+  const closeWindow = sinon.stub().resolves();
+  const { executorFor } = createContainerHarness({
+    currentWindow: { type: 'minecraft:generic_9x3' },
+    closeWindow
+  } as unknown as Partial<mineflayer.Bot>);
+
+  const result = await executorFor('close-window')({});
+
+  t.true(closeWindow.calledOnce);
+  t.true(result.content[0].text.includes('Closed bot window (type: minecraft:generic_9x3)'));
+});

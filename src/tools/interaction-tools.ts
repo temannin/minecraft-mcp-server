@@ -1,7 +1,8 @@
 import { z } from "zod";
 import mineflayer from 'mineflayer';
-import { Vec3 } from 'vec3';
 import { ToolFactory } from '../tool-factory.js';
+import { coerceCoordinates } from './coordinate-utils.js';
+import { findContainerBlock, withContainer } from './container-utils.js';
 
 export function registerInteractionTools(factory: ToolFactory, getBot: () => mineflayer.Bot): void {
   // Use item (right click) - generic right click with held item
@@ -42,16 +43,24 @@ export function registerInteractionTools(factory: ToolFactory, getBot: () => min
         return factory.createResponse("No fishing rod equipped! Equip one first with equip-item.");
       }
 
+      // Promise.race leaves the losing promise running, so the timer is
+      // cleared explicitly to avoid holding the process open after a catch.
+      let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
       try {
         await Promise.race([
           bot.fish(),
-          new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error('No bite - timed out')), timeout * 1000)
-          )
+          new Promise<never>((_, reject) => {
+            timeoutId = setTimeout(() => reject(new Error('No bite - timed out')), timeout * 1000);
+          })
         ]);
         return factory.createResponse("Caught something! Check inventory for new items.");
       } catch (error) {
         return factory.createResponse(`Fishing: ${(error as Error).message}`);
+      } finally {
+        if (timeoutId !== undefined) {
+          clearTimeout(timeoutId);
+        }
       }
     }
   );
@@ -112,10 +121,9 @@ export function registerInteractionTools(factory: ToolFactory, getBot: () => min
       }
 
       try {
-        bot.activateItem(false);
-        // Wait for eating to complete (roughly 1.6 seconds)
-        await new Promise(resolve => setTimeout(resolve, 2000));
-        bot.deactivateItem();
+        // consume() resolves when the server confirms the item was eaten,
+        // rather than guessing at a fixed eating duration.
+        await bot.consume();
         return factory.createResponse(`Consumed ${heldItem.name}`);
       } catch (error) {
         return factory.createResponse(`Failed to eat: ${(error as Error).message}`);
@@ -150,78 +158,91 @@ export function registerInteractionTools(factory: ToolFactory, getBot: () => min
     }
   );
 
-  // Open chest and deposit items
+  // Deposit items into a nearby container
   factory.registerTool(
     "deposit-to-chest",
-    "Open a nearby chest and deposit items into it",
+    "Open a nearby chest or other container and deposit items into it",
     {
-      chestX: z.number().describe("X coordinate of the chest"),
-      chestY: z.number().describe("Y coordinate of the chest"),
-      chestZ: z.number().describe("Z coordinate of the chest"),
-      itemName: z.string().describe("Name of the item to deposit"),
-      count: z.number().optional().describe("Number of items to deposit (default: all)")
+      chestX: z.coerce.number().describe("X coordinate of the chest"),
+      chestY: z.coerce.number().describe("Y coordinate of the chest"),
+      chestZ: z.coerce.number().describe("Z coordinate of the chest"),
+      itemName: z.string().trim().min(1).describe("Name of the item to deposit"),
+      count: z.number().int().positive().optional().describe("Number of items to deposit (default: all)")
     },
-    async ({ chestX, chestY, chestZ, itemName, count }) => {
-      const bot = getBot();
-      const chestBlock = bot.blockAt(new Vec3(chestX, chestY, chestZ));
+    async ({ chestX, chestY, chestZ, itemName, count }: {
+      chestX: number;
+      chestY: number;
+      chestZ: number;
+      itemName: string;
+      count?: number;
+    }) => {
+      ({ x: chestX, y: chestY, z: chestZ } = coerceCoordinates(chestX, chestY, chestZ));
 
-      if (!chestBlock || !chestBlock.name.includes('chest')) {
-        return factory.createResponse(`No chest found at (${chestX}, ${chestY}, ${chestZ})`);
+      const bot = getBot();
+      const chestBlock = findContainerBlock(bot, chestX, chestY, chestZ);
+
+      if (!chestBlock) {
+        return factory.createResponse(`No container found at (${chestX}, ${chestY}, ${chestZ})`);
       }
 
+      const item = bot.inventory.items().find((i) => i.name.includes(itemName.toLowerCase()));
+
+      if (!item) {
+        return factory.createResponse(`Couldn't find '${itemName}' in inventory`);
+      }
+
+      const depositCount = Math.min(count ?? item.count, item.count);
+
       try {
-        const container = await bot.openContainer(chestBlock);
-        const items = bot.inventory.items();
-        const item = items.find((i) => i.name.includes(itemName.toLowerCase()));
-
-        if (!item) {
-          container.close();
-          return factory.createResponse(`Couldn't find '${itemName}' in inventory`);
-        }
-
-        const depositCount = count ?? item.count;
-        await container.deposit(item.type, item.metadata, depositCount);
-        container.close();
-        return factory.createResponse(`Deposited ${depositCount} x ${item.name} into chest`);
+        await withContainer(bot, chestBlock, async (container) => {
+          await container.deposit(item.type, item.metadata ?? null, depositCount);
+        });
+        return factory.createResponse(`Deposited ${depositCount} x ${item.name} into ${chestBlock.name}`);
       } catch (error) {
         return factory.createResponse(`Failed to deposit: ${(error as Error).message}`);
       }
     }
   );
 
-  // Withdraw items from chest
+  // Withdraw items from a nearby container
   factory.registerTool(
     "withdraw-from-chest",
-    "Open a nearby chest and take items from it",
+    "Open a nearby chest or other container and take items from it",
     {
-      chestX: z.number().describe("X coordinate of the chest"),
-      chestY: z.number().describe("Y coordinate of the chest"),
-      chestZ: z.number().describe("Z coordinate of the chest"),
-      itemName: z.string().describe("Name of the item to withdraw"),
-      count: z.number().optional().describe("Number of items to withdraw (default: all)")
+      chestX: z.coerce.number().describe("X coordinate of the chest"),
+      chestY: z.coerce.number().describe("Y coordinate of the chest"),
+      chestZ: z.coerce.number().describe("Z coordinate of the chest"),
+      itemName: z.string().trim().min(1).describe("Name of the item to withdraw"),
+      count: z.number().int().positive().optional().describe("Number of items to withdraw (default: all)")
     },
-    async ({ chestX, chestY, chestZ, itemName, count }) => {
-      const bot = getBot();
-      const chestBlock = bot.blockAt(new Vec3(chestX, chestY, chestZ));
+    async ({ chestX, chestY, chestZ, itemName, count }: {
+      chestX: number;
+      chestY: number;
+      chestZ: number;
+      itemName: string;
+      count?: number;
+    }) => {
+      ({ x: chestX, y: chestY, z: chestZ } = coerceCoordinates(chestX, chestY, chestZ));
 
-      if (!chestBlock || !chestBlock.name.includes('chest')) {
-        return factory.createResponse(`No chest found at (${chestX}, ${chestY}, ${chestZ})`);
+      const bot = getBot();
+      const chestBlock = findContainerBlock(bot, chestX, chestY, chestZ);
+
+      if (!chestBlock) {
+        return factory.createResponse(`No container found at (${chestX}, ${chestY}, ${chestZ})`);
       }
 
       try {
-        const container = await bot.openContainer(chestBlock);
-        const chestItems = container.containerItems();
-        const item = chestItems.find((i) => i.name.includes(itemName.toLowerCase()));
+        return await withContainer(bot, chestBlock, async (container) => {
+          const item = container.containerItems().find((i) => i.name.includes(itemName.toLowerCase()));
 
-        if (!item) {
-          container.close();
-          return factory.createResponse(`Couldn't find '${itemName}' in chest`);
-        }
+          if (!item) {
+            return factory.createResponse(`Couldn't find '${itemName}' in ${chestBlock.name}`);
+          }
 
-        const withdrawCount = count ?? item.count;
-        await container.withdraw(item.type, item.metadata, withdrawCount);
-        container.close();
-        return factory.createResponse(`Withdrew ${withdrawCount} x ${item.name} from chest`);
+          const withdrawCount = Math.min(count ?? item.count, item.count);
+          await container.withdraw(item.type, item.metadata ?? null, withdrawCount);
+          return factory.createResponse(`Withdrew ${withdrawCount} x ${item.name} from ${chestBlock.name}`);
+        });
       } catch (error) {
         return factory.createResponse(`Failed to withdraw: ${(error as Error).message}`);
       }
